@@ -4,6 +4,7 @@
 #include "rtc_shared.h"
 #include "homescreen_shared.h"
 #include "webserver_shared.h"
+#include "bt_shared.h"
 #include <vector>
 #include <string>
 
@@ -25,6 +26,7 @@ enum class SettingsCategory {
     DISPLAY,
     FACES,
     SERVER,
+    BLUETOOTH,
     COUNT,
 };
 
@@ -50,6 +52,7 @@ private:
     void buildDisplaySection(lv_obj_t *list);
     void buildFacesSection(lv_obj_t *list);
     void buildServerSection(lv_obj_t *list);
+    void buildBluetoothSection(lv_obj_t *list);
     void updateClockLabel(void);
     void loadWatchfaceEntries(void);
     void refreshFaceButtons(void);
@@ -70,10 +73,12 @@ private:
     static void onHomeColorClicked(lv_event_t *e);
     static void onAodColorClicked(lv_event_t *e);
     static void onWebserverToggled(lv_event_t *e);
+    static void onBluetoothToggled(lv_event_t *e);
 
     void refreshHomeColorSwatches(void);
     void refreshAodColorSwatches(void);
     void updateWebserverLabel(void);
+    void updateBluetoothLabel(void);
 
     static SettingsApp *_instance;
 
@@ -95,6 +100,8 @@ private:
     lv_obj_t *_list = nullptr;
     lv_obj_t *_webserver_label = nullptr;
     lv_obj_t *_webserver_switch = nullptr;
+    lv_obj_t *_bt_label = nullptr;
+    lv_obj_t *_bt_switch = nullptr;
 
     SettingsCategory _current_category = SettingsCategory::TIME;
     lv_obj_t *_category_buttons[static_cast<int>(SettingsCategory::COUNT)] = {};

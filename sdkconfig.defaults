@@ -58,3 +58,15 @@ CONFIG_BOOST_SERIALIZATION_ENABLED=n
 
 CONFIG_MDNS_MAX_SERVICES=12
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# NimBLE, used by bt_shared for BLE advertising (see components/system/bt_shared).
+# Peripheral/Broadcaster roles are required to advertise at all - without them
+# the stack can only scan/connect to other devices, never be found itself.
+# Extended advertising is explicitly left off: it disables the legacy
+# ble_gap_adv_* API bt_shared.c uses (fails with BLE_HS_ENOTSUP otherwise),
+# and nothing here needs BLE 5 extended-advertising features.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+# CONFIG_BT_NIMBLE_EXT_ADV is not set

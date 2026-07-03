@@ -327,6 +327,7 @@ void SettingsApp::buildCategoryBar(lv_obj_t *parent)
         {"Display", SettingsCategory::DISPLAY},
         {"Faces", SettingsCategory::FACES},
         {"Server", SettingsCategory::SERVER},
+        {"Bluetooth", SettingsCategory::BLUETOOTH},
     };
 
     lv_obj_t *bar = lv_obj_create(parent);
@@ -378,6 +379,8 @@ void SettingsApp::selectCategory(SettingsCategory category)
     _clock_label = nullptr;
     _webserver_label = nullptr;
     _webserver_switch = nullptr;
+    _bt_label = nullptr;
+    _bt_switch = nullptr;
     _home_swatches.clear();
     _aod_swatches.clear();
     for (auto &face : _faces) {
@@ -399,6 +402,9 @@ void SettingsApp::selectCategory(SettingsCategory category)
         break;
     case SettingsCategory::SERVER:
         buildServerSection(_list);
+        break;
+    case SettingsCategory::BLUETOOTH:
+        buildBluetoothSection(_list);
         break;
     default:
         break;
@@ -553,6 +559,35 @@ void SettingsApp::buildServerSection(lv_obj_t *list)
     lv_obj_set_style_text_color(_webserver_label, lv_color_hex(0xb8d2dd), 0);
     lv_obj_set_style_text_font(_webserver_label, &lv_font_montserrat_16, 0);
     updateWebserverLabel();
+}
+
+void SettingsApp::buildBluetoothSection(lv_obj_t *list)
+{
+    lv_obj_t *bt_card = create_card(list, "Bluetooth");
+
+    lv_obj_t *bt_row = lv_obj_create(bt_card);
+    lv_obj_remove_style_all(bt_row);
+    lv_obj_set_size(bt_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(bt_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bt_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(bt_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *bt_label = lv_label_create(bt_row);
+    lv_label_set_text(bt_label, "Enable BLE advertising");
+    lv_obj_set_style_text_color(bt_label, lv_color_hex(0xffffff), 0);
+
+    _bt_switch = lv_switch_create(bt_row);
+    lv_obj_add_event_cb(_bt_switch, onBluetoothToggled, LV_EVENT_VALUE_CHANGED, this);
+    if (bt_shared_is_running()) {
+        lv_obj_add_state(_bt_switch, LV_STATE_CHECKED);
+    }
+
+    _bt_label = lv_label_create(bt_card);
+    lv_obj_set_width(_bt_label, LV_PCT(100));
+    lv_label_set_long_mode(_bt_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(_bt_label, lv_color_hex(0xb8d2dd), 0);
+    lv_obj_set_style_text_font(_bt_label, &lv_font_montserrat_16, 0);
+    updateBluetoothLabel();
 }
 
 void SettingsApp::updateClockLabel(void)
@@ -862,6 +897,43 @@ void SettingsApp::updateWebserverLabel(void)
     }
     lv_label_set_text(_webserver_label, buf);
     lv_obj_set_style_text_color(_webserver_label, lv_color_hex(0x6cf0c2), 0);
+}
+
+void SettingsApp::onBluetoothToggled(lv_event_t *e)
+{
+    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
+    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
+    bool turning_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+
+    if (!turning_on) {
+        bt_shared_stop();
+        app->updateBluetoothLabel();
+        return;
+    }
+
+    if (!bt_shared_start()) {
+        lv_obj_clear_state(sw, LV_STATE_CHECKED);
+        lv_label_set_text(app->_bt_label, "Failed to start - see serial log");
+        lv_obj_set_style_text_color(app->_bt_label, lv_color_hex(0xff8888), 0);
+        return;
+    }
+
+    app->updateBluetoothLabel();
+}
+
+void SettingsApp::updateBluetoothLabel(void)
+{
+    if (_bt_label == nullptr) {
+        return;
+    }
+    if (!bt_shared_is_running()) {
+        lv_label_set_text(_bt_label, "Off");
+        lv_obj_set_style_text_color(_bt_label, lv_color_hex(0xb8d2dd), 0);
+        return;
+    }
+
+    lv_label_set_text(_bt_label, "Advertising as \"ESPWatchOS\" - works alongside WiFi");
+    lv_obj_set_style_text_color(_bt_label, lv_color_hex(0x6cf0c2), 0);
 }
 
 ESP_UTILS_REGISTER_PLUGIN_WITH_CONSTRUCTOR(esp_brookesia::systems::base::App, SettingsApp, APP_NAME, []()
