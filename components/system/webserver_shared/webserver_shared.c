@@ -10,12 +10,148 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_random.h"
 #include "display_shared.h"
 #include "homescreen_shared.h"
 
 #define TAG "webserver_shared"
 #define FACES_DIR OS_FS_APPS_DIR "/watchface/faces"
 #define MAX_UPLOAD_BYTES 8192
+
+#define AUTH_CONFIG_PATH OS_FS_ETC_DIR "/webserver_auth.json"
+#define AUTH_USER "admin"
+
+static char s_auth_password[9] = {0};
+/* Cached "Basic <base64(user:password)>" - computed once so each request
+ * only needs a string compare, not a base64 encode. */
+static char s_expected_auth_header[64] = {0};
+
+static void base64_encode(const uint8_t *in, size_t in_len, char *out)
+{
+    static const char kTable[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t oi = 0;
+    size_t i;
+    for (i = 0; i + 2 < in_len; i += 3) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8) | in[i + 2];
+        out[oi++] = kTable[(v >> 18) & 0x3F];
+        out[oi++] = kTable[(v >> 12) & 0x3F];
+        out[oi++] = kTable[(v >> 6) & 0x3F];
+        out[oi++] = kTable[v & 0x3F];
+    }
+    size_t rem = in_len - i;
+    if (rem == 1) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        out[oi++] = kTable[(v >> 18) & 0x3F];
+        out[oi++] = kTable[(v >> 12) & 0x3F];
+        out[oi++] = '=';
+        out[oi++] = '=';
+    } else if (rem == 2) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8);
+        out[oi++] = kTable[(v >> 18) & 0x3F];
+        out[oi++] = kTable[(v >> 12) & 0x3F];
+        out[oi++] = kTable[(v >> 6) & 0x3F];
+        out[oi++] = '=';
+    }
+    out[oi] = '\0';
+}
+
+/* Generates and persists an 8-char alphanumeric device access password on
+ * first use (nothing to guess/default-credential across devices), and
+ * caches the "Authorization: Basic ..." header value it corresponds to.
+ * Stored in plaintext under /data/etc - unlike the WiFi password in
+ * wifi_shared, this is a device-generated access code the user reads off
+ * the watch's Settings screen, not a secret they typed in, so there is no
+ * separate secret worth protecting it from the same physical/USB access
+ * that could already read this file. */
+static void ensure_auth_ready(void)
+{
+    if (s_auth_password[0] != '\0') {
+        return;
+    }
+
+    FILE *f = fopen(AUTH_CONFIG_PATH, "r");
+    if (f != NULL) {
+        char json[64] = {0};
+        size_t n = fread(json, 1, sizeof(json) - 1, f);
+        fclose(f);
+        json[n] = '\0';
+
+        const char *p = strstr(json, "\"password\"");
+        if (p != NULL) {
+            p = strchr(p, ':');
+            if (p != NULL) {
+                p++;
+                while (*p == ' ') p++;
+                if (*p == '"') {
+                    p++;
+                    const char *end = strchr(p, '"');
+                    if (end != NULL && (size_t)(end - p) == 8) {
+                        memcpy(s_auth_password, p, 8);
+                        s_auth_password[8] = '\0';
+                    }
+                }
+            }
+        }
+    }
+
+    if (s_auth_password[0] == '\0') {
+        static const char kCharset[] =
+            "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+        uint8_t rnd[8];
+        esp_fill_random(rnd, sizeof(rnd));
+        for (int i = 0; i < 8; i++) {
+            s_auth_password[i] = kCharset[rnd[i] % (sizeof(kCharset) - 1)];
+        }
+        s_auth_password[8] = '\0';
+
+        char json[64];
+        snprintf(json, sizeof(json), "{\"password\":\"%s\"}", s_auth_password);
+        FILE *wf = fopen(AUTH_CONFIG_PATH, "w");
+        if (wf != NULL) {
+            fwrite(json, 1, strlen(json), wf);
+            fclose(wf);
+        } else {
+            ESP_LOGW(TAG, "Failed to persist webserver auth password");
+        }
+    }
+
+    char userpass[32];
+    snprintf(userpass, sizeof(userpass), "%s:%s", AUTH_USER, s_auth_password);
+    char encoded[32];
+    base64_encode((const uint8_t *)userpass, strlen(userpass), encoded);
+    snprintf(s_expected_auth_header, sizeof(s_expected_auth_header), "Basic %s", encoded);
+}
+
+bool webserver_shared_get_password(char *out, size_t out_len)
+{
+    ensure_auth_ready();
+    if (s_auth_password[0] == '\0') {
+        return false;
+    }
+    snprintf(out, out_len, "%s", s_auth_password);
+    return true;
+}
+
+/* Returns true and lets the caller proceed if the request carries the
+ * correct HTTP Basic credentials; otherwise sends 401 (with the
+ * WWW-Authenticate header browsers need to prompt for credentials) and
+ * returns false - the caller must return immediately in that case. */
+static bool check_auth(httpd_req_t *req)
+{
+    ensure_auth_ready();
+
+    char hdr[64] = {0};
+    esp_err_t err = httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr));
+    if (err == ESP_OK && strcmp(hdr, s_expected_auth_header) == 0) {
+        return true;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"ESPWatchOS\"");
+    httpd_resp_sendstr(req, "Unauthorized");
+    return false;
+}
 
 /* esp_http_server + lwIP need a few contiguous KB of headroom to allocate
  * socket/pbuf buffers; starting it below this threshold doesn't fail
@@ -115,6 +251,10 @@ static void json_get_str(const char *json, const char *key, char *out, size_t ou
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) {
+        return ESP_OK;
+    }
+
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req,
                               "<!doctype html><html><head><meta name=viewport "
@@ -261,6 +401,10 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
 static esp_err_t upload_post_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) {
+        return ESP_OK;
+    }
+
     char name[40];
     char query[64];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -311,6 +455,10 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 
 static esp_err_t delete_get_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) {
+        return ESP_OK;
+    }
+
     char name[40];
     char query[64];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
@@ -330,6 +478,10 @@ static esp_err_t delete_get_handler(httpd_req_t *req)
 
 static esp_err_t brightness_post_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) {
+        return ESP_OK;
+    }
+
     char query[32];
     char value_str[8];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -353,6 +505,10 @@ static esp_err_t brightness_post_handler(httpd_req_t *req)
 
 static esp_err_t bgcolor_post_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) {
+        return ESP_OK;
+    }
+
     char query[32];
     char value_str[8];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -381,6 +537,10 @@ static esp_err_t bgcolor_post_handler(httpd_req_t *req)
 
 static esp_err_t aodcolor_post_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) {
+        return ESP_OK;
+    }
+
     char query[32];
     char value_str[8];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||

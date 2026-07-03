@@ -848,9 +848,15 @@ void SettingsApp::updateWebserverLabel(void)
     }
 
     char ip[16] = {};
-    char buf[64];
+    char password[9] = {};
+    bool have_password = webserver_shared_get_password(password, sizeof(password));
+    char buf[96];
     if (wifi_shared_get_ip(ip, sizeof(ip))) {
-        snprintf(buf, sizeof(buf), "Open http://%s in a browser", ip);
+        if (have_password) {
+            snprintf(buf, sizeof(buf), "Open http://%s - user admin, password %s", ip, password);
+        } else {
+            snprintf(buf, sizeof(buf), "Open http://%s in a browser", ip);
+        }
     } else {
         snprintf(buf, sizeof(buf), "Running, but no IP yet");
     }

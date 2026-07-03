@@ -10,6 +10,8 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "esp_mac.h"
+#include "psa/crypto.h"
 #include "os_fs.h"
 
 #include <stdio.h>
@@ -17,6 +19,167 @@
 static const char *TAG = "wifi_shared";
 
 #define WIFI_CONFIG_PATH OS_FS_ETC_DIR "/wifi.json"
+
+/* The stored password is AES-128-CTR encrypted (via PSA Crypto) with a key
+ * derived from this device's factory-programmed MAC address
+ * (SHA-256(mac || context) -> first 16 bytes). This keeps the credential
+ * out of the plaintext file a casual look at the filesystem (e.g. a pulled
+ * LittleFS image) would see - it does NOT protect against an attacker who
+ * also has the firmware source, since the key is fully derivable from a MAC
+ * address readable via the same physical/USB access that would expose the
+ * file in the first place. True protection against that threat model needs
+ * flash encryption, which is a one-way, per-device provisioning step
+ * outside what this function can do.
+ */
+static bool ensure_psa_crypto_ready(void)
+{
+    static bool s_ready = false;
+    if (!s_ready) {
+        s_ready = (psa_crypto_init() == PSA_SUCCESS);
+    }
+    return s_ready;
+}
+
+static void derive_wifi_key(uint8_t out_key[16])
+{
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+    static const char kContext[] = "esp-watchos-wifi-cred-v1";
+    uint8_t input[sizeof(mac) + sizeof(kContext) - 1];
+    memcpy(input, mac, sizeof(mac));
+    memcpy(input + sizeof(mac), kContext, sizeof(kContext) - 1);
+
+    uint8_t digest[32];
+    size_t digest_len = 0;
+    psa_hash_compute(PSA_ALG_SHA_256, input, sizeof(input), digest, sizeof(digest), &digest_len);
+
+    memcpy(out_key, digest, 16);
+}
+
+static void hex_encode(const uint8_t *in, size_t in_len, char *out)
+{
+    static const char kHex[] = "0123456789abcdef";
+    for (size_t i = 0; i < in_len; i++) {
+        out[i * 2] = kHex[(in[i] >> 4) & 0xF];
+        out[i * 2 + 1] = kHex[in[i] & 0xF];
+    }
+    out[in_len * 2] = '\0';
+}
+
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool hex_decode(const char *in, uint8_t *out, size_t out_len)
+{
+    for (size_t i = 0; i < out_len; i++) {
+        int hi = hex_nibble(in[i * 2]);
+        int lo = hex_nibble(in[i * 2 + 1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static bool import_wifi_key(psa_key_id_t *key_id, psa_key_usage_t usage)
+{
+    uint8_t key[16];
+    derive_wifi_key(key);
+
+    psa_key_attributes_t attrs = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_usage_flags(&attrs, usage);
+    psa_set_key_algorithm(&attrs, PSA_ALG_CTR);
+    psa_set_key_type(&attrs, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&attrs, 128);
+
+    return psa_import_key(&attrs, key, sizeof(key), key_id) == PSA_SUCCESS;
+}
+
+/* Encrypts `password` (up to 64 bytes, matching wifi_config_t::sta.password)
+ * with AES-128-CTR under a fresh random IV (PSA generates and prepends it
+ * automatically), and hex-encodes "iv || ciphertext" into `out`
+ * (caller-sized for 2*(16+64)+1 bytes). */
+static void encrypt_password_hex(const char *password, char *out, size_t out_size)
+{
+    out[0] = '\0';
+    if (!ensure_psa_crypto_ready()) {
+        return;
+    }
+
+    psa_key_id_t key_id;
+    if (!import_wifi_key(&key_id, PSA_KEY_USAGE_ENCRYPT)) {
+        return;
+    }
+
+    size_t pw_len = strlen(password);
+    uint8_t blob[16 + 64] = {0};
+    size_t blob_len = 0;
+    psa_status_t st = psa_cipher_encrypt(key_id, PSA_ALG_CTR,
+                                         (const uint8_t *)password, pw_len,
+                                         blob, sizeof(blob), &blob_len);
+    psa_destroy_key(key_id);
+
+    if (st != PSA_SUCCESS || blob_len * 2 + 1 > out_size) {
+        return;
+    }
+    hex_encode(blob, blob_len, out);
+}
+
+/* Reverses encrypt_password_hex(). `hex` is "iv || ciphertext" hex, `out`
+ * receives the decrypted password (NUL-terminated, out_size-capped). An
+ * empty `hex` decodes to an empty (open-network) password, matching the
+ * pre-encryption on-disk format. */
+static bool decrypt_password_hex(const char *hex, char *out, size_t out_size)
+{
+    size_t hex_len = strlen(hex);
+    if (hex_len == 0) {
+        out[0] = '\0';
+        return true;
+    }
+    if ((hex_len % 2) != 0 || hex_len / 2 > (16 + 64)) {
+        out[0] = '\0';
+        return false;
+    }
+
+    uint8_t blob[16 + 64];
+    size_t blob_len = hex_len / 2;
+    if (!hex_decode(hex, blob, blob_len)) {
+        out[0] = '\0';
+        return false;
+    }
+
+    if (!ensure_psa_crypto_ready()) {
+        out[0] = '\0';
+        return false;
+    }
+
+    psa_key_id_t key_id;
+    if (!import_wifi_key(&key_id, PSA_KEY_USAGE_DECRYPT)) {
+        out[0] = '\0';
+        return false;
+    }
+
+    uint8_t plain[64] = {0};
+    size_t plain_len = 0;
+    psa_status_t st = psa_cipher_decrypt(key_id, PSA_ALG_CTR, blob, blob_len,
+                                         plain, sizeof(plain), &plain_len);
+    psa_destroy_key(key_id);
+
+    if (st != PSA_SUCCESS || plain_len >= out_size) {
+        out[0] = '\0';
+        return false;
+    }
+    memcpy(out, plain, plain_len);
+    out[plain_len] = '\0';
+    return true;
+}
 
 static bool s_connected = false;
 static char s_ip[16] = {0};
@@ -102,10 +265,13 @@ static void json_escape_append(char *buf, size_t buf_size, const char *s)
 
 static void save_credentials(const char *ssid, const char *password)
 {
-    char buf[160] = "{\"ssid\":\"";
+    char enc_password[161];
+    encrypt_password_hex(password != NULL ? password : "", enc_password, sizeof(enc_password));
+
+    char buf[320] = "{\"ssid\":\"";
     json_escape_append(buf, sizeof(buf), ssid);
     strncat(buf, "\",\"password\":\"", sizeof(buf) - strlen(buf) - 1);
-    json_escape_append(buf, sizeof(buf), password != NULL ? password : "");
+    json_escape_append(buf, sizeof(buf), enc_password);
     strncat(buf, "\"}", sizeof(buf) - strlen(buf) - 1);
 
     FILE *f = fopen(WIFI_CONFIG_PATH, "w");
@@ -123,7 +289,7 @@ static bool load_credentials(char *ssid, size_t ssid_len, char *password, size_t
     if (f == NULL) {
         return false;
     }
-    char json[256] = {0};
+    char json[320] = {0};
     size_t n = fread(json, 1, sizeof(json) - 1, f);
     fclose(f);
     json[n] = '\0';
@@ -131,7 +297,13 @@ static bool load_credentials(char *ssid, size_t ssid_len, char *password, size_t
     if (!json_get_string(json, "ssid", ssid, ssid_len) || ssid[0] == '\0') {
         return false;
     }
-    if (!json_get_string(json, "password", password, password_len)) {
+    char enc_password[161] = {0};
+    if (!json_get_string(json, "password", enc_password, sizeof(enc_password))) {
+        password[0] = '\0';
+        return true;
+    }
+    if (!decrypt_password_hex(enc_password, password, password_len)) {
+        ESP_LOGW(TAG, "Stored WiFi password could not be decrypted, treating as none");
         password[0] = '\0';
     }
     return true;

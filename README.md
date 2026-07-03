@@ -32,10 +32,10 @@ Both `components/apps` and `components/system` are wired in via `EXTRA_COMPONENT
 
 Add a new component under `components/apps/`, subclass `esp_brookesia::systems::phone::App` (see any existing app for the `run`/`back`/`pause`/`resume`/`close` lifecycle), and register it with `ESP_UTILS_REGISTER_PLUGIN_WITH_CONSTRUCTOR` - apps self-register at startup, so nothing else needs editing to wire it into the launcher.
 
-## Known limitations
+## Security notes
 
-- WiFi credentials are stored unencrypted on the LittleFS filesystem (`wifi_shared`) - readable with physical/USB access to the device.
-- The settings webserver (`webserver_shared`) has no authentication - anyone on the same WiFi network can reach it.
+- WiFi credentials are AES-128-CTR encrypted (`wifi_shared`) with a key derived from the device's own MAC address before being written to LittleFS - this keeps the password out of a plaintext file a casual look at the filesystem would see, but does not withstand an attacker who also has this source code, since the key is fully derivable from a MAC address readable via the same physical/USB access that would expose the file. True protection against that threat model needs flash encryption, a one-way per-device provisioning step this project doesn't do.
+- The settings webserver (`webserver_shared`) requires HTTP Basic Auth (`admin` + an 8-character password generated on first use, shown on the watch under Settings -> Server).
 
 ## Building
 
