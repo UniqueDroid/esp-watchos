@@ -1,0 +1,15 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+
+# IDF component manager - pulls managed_components/ back down from
+# idf_component.yml + dependencies.lock, no need to version the vendored copy
+managed_components/
+
+# Reference-only vendor firmware, unrelated to this project's own build
+# (kept on disk for hardware reference, not tracked - see README)
+FirmWare/*.bin
+
+.vscode/
+.claude/settings.local.json
