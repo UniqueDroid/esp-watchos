@@ -18,6 +18,8 @@
 #include "alarm_shared.h"
 #include "timer_shared.h"
 #include "display_shared.h"
+#include "battery_shared.h"
+#include "weather_shared.h"
 
 #include "bsp/esp-bsp.h"
 #include "esp_brookesia.hpp"
@@ -223,8 +225,19 @@ static const uint8_t SEVEN_SEG_DIGIT_MAP[10] = {
 };
 
 static lv_obj_t *s_aod_screen = nullptr;
+static lv_obj_t *s_aod_digit_row = nullptr;
+static lv_obj_t *s_aod_date_label = nullptr;
+static lv_obj_t *s_aod_status_label = nullptr;
+static lv_obj_t *s_aod_weather_label = nullptr;
 static SevenSegDigit s_aod_digits[4];
 static lv_obj_t *s_aod_colon_dots[2] = {nullptr, nullptr};
+
+static const char *const AOD_WEEKDAY_NAMES[7] = {
+    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
+};
+static const char *const AOD_MONTH_NAMES[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
 
 static void create_seven_seg_digit(lv_obj_t *parent, SevenSegDigit *digit)
 {
@@ -271,16 +284,25 @@ static void build_aod_screen(void)
     lv_obj_set_size(s_aod_screen, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(s_aod_screen, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(s_aod_screen, LV_OPA_COVER, 0);
-    lv_obj_set_flex_flow(s_aod_screen, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_flow(s_aod_screen, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_aod_screen, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(s_aod_screen, 10, 0);
+    lv_obj_set_style_pad_row(s_aod_screen, 14, 0);
     lv_obj_clear_flag(s_aod_screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s_aod_screen, LV_OBJ_FLAG_CLICKABLE);
 
-    create_seven_seg_digit(s_aod_screen, &s_aod_digits[0]);
-    create_seven_seg_digit(s_aod_screen, &s_aod_digits[1]);
+    s_aod_digit_row = lv_obj_create(s_aod_screen);
+    lv_obj_remove_style_all(s_aod_digit_row);
+    lv_obj_set_size(s_aod_digit_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_aod_digit_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_aod_digit_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_aod_digit_row, 10, 0);
+    lv_obj_clear_flag(s_aod_digit_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_aod_digit_row, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *colon = lv_obj_create(s_aod_screen);
+    create_seven_seg_digit(s_aod_digit_row, &s_aod_digits[0]);
+    create_seven_seg_digit(s_aod_digit_row, &s_aod_digits[1]);
+
+    lv_obj_t *colon = lv_obj_create(s_aod_digit_row);
     lv_obj_remove_style_all(colon);
     lv_obj_set_size(colon, 20, 130);
     lv_obj_clear_flag(colon, LV_OBJ_FLAG_SCROLLABLE);
@@ -298,8 +320,26 @@ static void build_aod_screen(void)
         s_aod_colon_dots[dot_idx++] = dot;
     }
 
-    create_seven_seg_digit(s_aod_screen, &s_aod_digits[2]);
-    create_seven_seg_digit(s_aod_screen, &s_aod_digits[3]);
+    create_seven_seg_digit(s_aod_digit_row, &s_aod_digits[2]);
+    create_seven_seg_digit(s_aod_digit_row, &s_aod_digits[3]);
+
+    s_aod_date_label = lv_label_create(s_aod_screen);
+    lv_label_set_text(s_aod_date_label, "");
+    lv_obj_set_style_text_color(s_aod_date_label, lv_color_hex(s_aod_color), 0);
+    lv_obj_set_style_text_font(s_aod_date_label, &lv_font_montserrat_24, 0);
+    lv_obj_clear_flag(s_aod_date_label, LV_OBJ_FLAG_CLICKABLE);
+
+    s_aod_status_label = lv_label_create(s_aod_screen);
+    lv_label_set_text(s_aod_status_label, "");
+    lv_obj_set_style_text_color(s_aod_status_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(s_aod_status_label, &lv_font_montserrat_20, 0);
+    lv_obj_clear_flag(s_aod_status_label, LV_OBJ_FLAG_CLICKABLE);
+
+    s_aod_weather_label = lv_label_create(s_aod_screen);
+    lv_label_set_text(s_aod_weather_label, "");
+    lv_obj_set_style_text_color(s_aod_weather_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(s_aod_weather_label, &lv_font_montserrat_20, 0);
+    lv_obj_clear_flag(s_aod_weather_label, LV_OBJ_FLAG_CLICKABLE);
 }
 
 static void update_aod_clock(void)
@@ -310,6 +350,70 @@ static void update_aod_clock(void)
     set_seven_seg_digit(&s_aod_digits[1], dt.hour % 10);
     set_seven_seg_digit(&s_aod_digits[2], dt.min / 10);
     set_seven_seg_digit(&s_aod_digits[3], dt.min % 10);
+
+    if (s_aod_date_label != nullptr) {
+        int weekday = rtc_shared_weekday(dt.year, dt.month, dt.day);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%s, %s %u", AOD_WEEKDAY_NAMES[weekday], AOD_MONTH_NAMES[dt.month - 1],
+                 (unsigned)dt.day);
+        lv_label_set_text(s_aod_date_label, buf);
+    }
+}
+
+static void update_aod_status(void)
+{
+    if (s_aod_status_label == nullptr) {
+        return;
+    }
+
+    char buf[64];
+    const char *wifi_icon = wifi_shared_is_connected() ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE;
+
+    int batt_percent = battery_shared_get_percent();
+    if (batt_percent < 0) {
+        snprintf(buf, sizeof(buf), "%s", wifi_icon);
+    } else {
+        const char *batt_icon = LV_SYMBOL_BATTERY_EMPTY;
+        if (battery_shared_get_state() == BATTERY_SHARED_STATE_CHARGING) {
+            batt_icon = LV_SYMBOL_CHARGE;
+        } else if (batt_percent >= 90) {
+            batt_icon = LV_SYMBOL_BATTERY_FULL;
+        } else if (batt_percent >= 60) {
+            batt_icon = LV_SYMBOL_BATTERY_3;
+        } else if (batt_percent >= 40) {
+            batt_icon = LV_SYMBOL_BATTERY_2;
+        } else if (batt_percent >= 15) {
+            batt_icon = LV_SYMBOL_BATTERY_1;
+        }
+        snprintf(buf, sizeof(buf), "%s   %s %d%%", wifi_icon, batt_icon, batt_percent);
+    }
+    lv_label_set_text(s_aod_status_label, buf);
+}
+
+/* Kicks off a background refresh when the cached weather is missing/stale -
+ * never blocks this (UI) task. weather_shared_refresh_async() itself
+ * no-ops if Wi-Fi is down, no location is saved, or a fetch is already
+ * running, so it's cheap to call speculatively on every AOD tick. */
+static void update_aod_weather(void)
+{
+    if (s_aod_weather_label == nullptr) {
+        return;
+    }
+
+    weather_shared_data_t data;
+    weather_shared_poll(&data);  // drains the result queue; weather_shared_get_last() below has the value either way
+    weather_shared_data_t last = weather_shared_get_last();
+    if (last.valid) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%.0f°C  %s", last.temperature_c, weather_shared_describe(last.weather_code));
+        lv_label_set_text(s_aod_weather_label, buf);
+    } else {
+        lv_label_set_text(s_aod_weather_label, "");
+    }
+
+    if (weather_shared_is_stale()) {
+        weather_shared_refresh_async();
+    }
 }
 
 static void set_aod_colon_visible(bool visible)
@@ -337,6 +441,8 @@ static void on_aod_update_timer(lv_timer_t *t)
     (void)t;
     static bool colon_visible = true;
     update_aod_clock();
+    update_aod_status();
+    update_aod_weather();
     colon_visible = !colon_visible;
     set_aod_colon_visible(colon_visible);
 }
@@ -389,8 +495,14 @@ static void hide_aod_view(void)
         s_aod_update_timer = nullptr;
     }
     if (s_aod_screen != nullptr) {
-        lv_obj_del(s_aod_screen);
+        lv_obj_del(s_aod_screen);  // deletes the whole subtree (digit row, colon, labels) too
         s_aod_screen = nullptr;
+        s_aod_digit_row = nullptr;
+        s_aod_date_label = nullptr;
+        s_aod_status_label = nullptr;
+        s_aod_weather_label = nullptr;
+        s_aod_colon_dots[0] = nullptr;
+        s_aod_colon_dots[1] = nullptr;
     }
 
     /* Restore the stylesheet's normal modes (status bar fixed-visible,
@@ -543,6 +655,8 @@ extern "C" void app_main(void)
      * (which uses plain time()) is correct from the first frame, instead of
      * only once some app happens to open and call this lazily. */
     rtc_shared_init();
+    battery_shared_init();
+    weather_shared_init();
 
     /* Configure GUI lock */
     LvLock::registerCallbacks([](int timeout_ms) {

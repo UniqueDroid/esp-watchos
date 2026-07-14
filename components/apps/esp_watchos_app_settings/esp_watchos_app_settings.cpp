@@ -157,6 +157,10 @@ bool SettingsApp::back(void)
         closeSetTimePopup();
         return true;
     }
+    if (_location_popup != nullptr) {
+        closeLocationPopup();
+        return true;
+    }
 
     ESP_UTILS_CHECK_FALSE_RETURN(notifyCoreClosed(), false, "Notify core closed failed");
     return true;
@@ -293,11 +297,12 @@ static lv_obj_t *create_card(lv_obj_t *parent, const char *title_text)
     return card;
 }
 
-/* Horizontal category bar + one section shown at a time (instead of every
- * card stacked vertically) - besides being the requested UX, this also
- * solves the old memory problem: only the SELECTED category's widgets ever
- * exist at once, so e.g. the watchface server can start without first
- * needing to manually tear down the rest of the screen. */
+#define CATEGORY_BAR_HEIGHT 148
+
+/* Category tabs wrap onto two rows instead of scrolling off-screen in one -
+ * on a 410px-wide round display, 5 text buttons in a single scrollable row
+ * hid "Bluetooth" off the edge with no hint that more tabs existed. Wrapping
+ * shows every category at once, no swipe required. */
 void SettingsApp::buildUi(lv_obj_t *parent)
 {
     lv_obj_t *title = lv_label_create(parent);
@@ -309,8 +314,8 @@ void SettingsApp::buildUi(lv_obj_t *parent)
 
     lv_obj_t *list = lv_obj_create(parent);
     lv_obj_remove_style_all(list);
-    lv_obj_set_size(list, LV_PCT(100), CONTENT_HEIGHT - 110);
-    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 110);
+    lv_obj_set_size(list, LV_PCT(100), CONTENT_HEIGHT - 46 - CATEGORY_BAR_HEIGHT);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 46 + CATEGORY_BAR_HEIGHT);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list, 10, 0);
     lv_obj_set_style_pad_all(list, 8, 0);
@@ -332,18 +337,17 @@ void SettingsApp::buildCategoryBar(lv_obj_t *parent)
 
     lv_obj_t *bar = lv_obj_create(parent);
     lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, LV_PCT(100), 90);
+    lv_obj_set_size(bar, LV_PCT(100), CATEGORY_BAR_HEIGHT);
     lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 46);
-    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(bar, 8, 0);
-    lv_obj_set_style_pad_left(bar, 8, 0);
-    lv_obj_set_scroll_dir(bar, LV_DIR_HOR);
-    lv_obj_set_scroll_snap_x(bar, LV_SCROLL_SNAP_START);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_pad_row(bar, 8, 0);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
     for (size_t i = 0; i < sizeof(CATEGORIES) / sizeof(CATEGORIES[0]); i++) {
         lv_obj_t *btn = lv_button_create(bar);
-        lv_obj_set_size(btn, 90, 70);
+        lv_obj_set_size(btn, 120, 66);
         lv_obj_set_user_data(btn, (void *)(intptr_t)CATEGORIES[i].category);
         lv_obj_add_event_cb(btn, onCategoryButtonClicked, LV_EVENT_CLICKED, this);
         lv_obj_t *lbl = lv_label_create(btn);
@@ -381,6 +385,7 @@ void SettingsApp::selectCategory(SettingsCategory category)
     _webserver_switch = nullptr;
     _bt_label = nullptr;
     _bt_switch = nullptr;
+    _location_label = nullptr;
     _home_swatches.clear();
     _aod_swatches.clear();
     for (auto &face : _faces) {
@@ -463,7 +468,7 @@ void SettingsApp::buildDisplaySection(lv_obj_t *list)
     for (uint32_t color : HOME_COLORS) {
         lv_obj_t *swatch = lv_obj_create(color_row);
         lv_obj_remove_style_all(swatch);
-        lv_obj_set_size(swatch, 48, 48);
+        lv_obj_set_size(swatch, 58, 58);
         lv_obj_set_style_bg_color(swatch, lv_color_hex(color), 0);
         lv_obj_set_style_bg_opa(swatch, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(swatch, 8, 0);
@@ -495,7 +500,7 @@ void SettingsApp::buildDisplaySection(lv_obj_t *list)
     for (uint32_t color : AOD_COLORS) {
         lv_obj_t *swatch = lv_obj_create(aod_row);
         lv_obj_remove_style_all(swatch);
-        lv_obj_set_size(swatch, 48, 48);
+        lv_obj_set_size(swatch, 58, 58);
         lv_obj_set_style_bg_color(swatch, lv_color_hex(color), 0);
         lv_obj_set_style_bg_opa(swatch, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(swatch, 8, 0);
@@ -505,6 +510,256 @@ void SettingsApp::buildDisplaySection(lv_obj_t *list)
         _aod_swatches.push_back({color, swatch});
     }
     refreshAodColorSwatches();
+
+    buildLocationCard(list);
+}
+
+void SettingsApp::buildLocationCard(lv_obj_t *parent)
+{
+    lv_obj_t *loc_card = create_card(parent, "Location (for Weather)");
+
+    _location_label = lv_label_create(loc_card);
+    lv_obj_set_width(_location_label, LV_PCT(100));
+    lv_label_set_long_mode(_location_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(_location_label, lv_color_hex(0xb8d2dd), 0);
+    lv_obj_set_style_text_font(_location_label, &lv_font_montserrat_20, 0);
+
+    lv_obj_t *change_btn = lv_button_create(loc_card);
+    lv_obj_set_size(change_btn, 130, 42);
+    lv_obj_add_event_cb(change_btn, onLocationChangeClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t *change_lbl = lv_label_create(change_btn);
+    lv_label_set_text(change_lbl, "Change");
+    lv_obj_center(change_lbl);
+
+    updateLocationLabel();
+}
+
+void SettingsApp::updateLocationLabel(void)
+{
+    if (_location_label == nullptr) {
+        return;
+    }
+    weather_shared_location_t loc = {};
+    if (weather_shared_get_location(&loc)) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%s (%.2f, %.2f)", loc.city, loc.latitude, loc.longitude);
+        lv_label_set_text(_location_label, buf);
+    } else {
+        lv_label_set_text(_location_label, "Not set - weather won't show on the clock");
+    }
+}
+
+void SettingsApp::onLocationChangeClicked(lv_event_t *e)
+{
+    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
+    app->showLocationPopup();
+}
+
+void SettingsApp::showLocationPopup(void)
+{
+    closeLocationPopup();
+
+    /* Same reasoning as the Wi-Fi password popup: free the settings list's
+     * widgets while the popup (with its own textarea + keyboard) is up -
+     * this device has very little heap headroom without PSRAM. */
+    lv_obj_clean(_list);
+
+    int popup_height = CONTENT_HEIGHT - 8;
+
+    _location_popup = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(_location_popup);
+    lv_obj_set_size(_location_popup, LV_PCT(96), popup_height);
+    lv_obj_align(_location_popup, LV_ALIGN_TOP_MID, 0, STATUS_BAR_HEIGHT + 4);
+    lv_obj_set_style_bg_color(_location_popup, lv_color_hex(0x141c22), 0);
+    lv_obj_set_style_bg_opa(_location_popup, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(_location_popup, lv_color_hex(0x6cf0c2), 0);
+    lv_obj_set_style_border_width(_location_popup, 2, 0);
+    lv_obj_set_style_radius(_location_popup, 10, 0);
+    lv_obj_set_style_pad_all(_location_popup, 8, 0);
+    lv_obj_clear_flag(_location_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(_location_popup);
+    lv_label_set_text(title, "City name");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+    lv_obj_set_width(title, LV_PCT(100));
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _location_ta = lv_textarea_create(_location_popup);
+    lv_textarea_set_one_line(_location_ta, true);
+    lv_obj_set_size(_location_ta, LV_PCT(100), 52);
+    lv_obj_set_style_text_font(_location_ta, &lv_font_montserrat_20, 0);
+    lv_obj_align_to(_location_ta, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+    weather_shared_location_t loc = {};
+    if (weather_shared_get_location(&loc)) {
+        lv_textarea_set_text(_location_ta, loc.city);
+    }
+
+    _location_status_label = lv_label_create(_location_popup);
+    lv_label_set_text(_location_status_label, "");
+    lv_obj_set_style_text_color(_location_status_label, lv_color_hex(0xff8844), 0);
+    lv_obj_set_style_text_font(_location_status_label, &lv_font_montserrat_18, 0);
+    lv_obj_align_to(_location_status_label, _location_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+
+    _location_save_btn = lv_button_create(_location_popup);
+    lv_obj_set_size(_location_save_btn, 110, 44);
+    lv_obj_align_to(_location_save_btn, _location_status_label, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
+    lv_obj_add_event_cb(_location_save_btn, onLocationSaveClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t *save_lbl = lv_label_create(_location_save_btn);
+    lv_label_set_text(save_lbl, "Save");
+    lv_obj_center(save_lbl);
+
+    lv_obj_t *cancel_btn = lv_button_create(_location_popup);
+    lv_obj_set_size(cancel_btn, 100, 44);
+    lv_obj_align_to(cancel_btn, _location_save_btn, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(cancel_btn, onLocationCancelClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_lbl, "Cancel");
+    lv_obj_center(cancel_lbl);
+
+    buildLocationKeyboard(_location_popup);
+
+    lv_obj_add_state(_location_ta, LV_STATE_FOCUSED);
+}
+
+/* Same lv_buttonmatrix approach as the Wi-Fi password keyboard (see that
+ * file for why: lv_keyboard has repeatedly hung on this display/LVGL combo
+ * on this no-PSRAM chip). Duplicated rather than shared since apps in this
+ * project are self-contained. */
+static const char *LOCATION_KB_LOWER_MAP[] = {
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
+    LV_SYMBOL_UP, "z", "x", "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE, "\n",
+    "123", "space", ""
+};
+static const char *LOCATION_KB_UPPER_MAP[] = {
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
+    LV_SYMBOL_UP, "Z", "X", "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE, "\n",
+    "123", "space", ""
+};
+static const char *LOCATION_KB_NUMERIC_MAP[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+    "-", "_", "=", "+", "!", "@", "#", "\n",
+    "ABC", "$", "%", "^", "&", "*", "(", ")", LV_SYMBOL_BACKSPACE, "\n",
+    "space", ""
+};
+
+void SettingsApp::buildLocationKeyboard(lv_obj_t *parent)
+{
+    int keyboard_height = (CONTENT_HEIGHT - 8) * 50 / 100;
+
+    lv_obj_t *kb = lv_buttonmatrix_create(parent);
+    lv_obj_set_size(kb, LV_PCT(100), keyboard_height);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_text_font(kb, &lv_font_montserrat_18, 0);
+    lv_buttonmatrix_set_map(kb, LOCATION_KB_LOWER_MAP);
+    lv_obj_add_event_cb(kb, onLocationKeyClicked, LV_EVENT_VALUE_CHANGED, this);
+
+    _location_keyboard = kb;
+    _location_keyboard_numeric = false;
+    _location_keyboard_shift = false;
+}
+
+void SettingsApp::handleLocationKeyText(const char *text)
+{
+    if (_location_ta == nullptr || text == nullptr) {
+        return;
+    }
+    if (strcmp(text, LV_SYMBOL_BACKSPACE) == 0) {
+        lv_textarea_delete_char(_location_ta);
+    } else if (strcmp(text, "123") == 0 || strcmp(text, "ABC") == 0) {
+        _location_keyboard_numeric = !_location_keyboard_numeric;
+        lv_buttonmatrix_set_map(_location_keyboard, _location_keyboard_numeric ? LOCATION_KB_NUMERIC_MAP :
+                                 (_location_keyboard_shift ? LOCATION_KB_UPPER_MAP : LOCATION_KB_LOWER_MAP));
+    } else if (strcmp(text, LV_SYMBOL_UP) == 0) {
+        _location_keyboard_shift = !_location_keyboard_shift;
+        lv_buttonmatrix_set_map(_location_keyboard, _location_keyboard_shift ? LOCATION_KB_UPPER_MAP : LOCATION_KB_LOWER_MAP);
+    } else if (strcmp(text, "space") == 0) {
+        lv_textarea_add_char(_location_ta, ' ');
+    } else {
+        lv_textarea_add_text(_location_ta, text);
+    }
+}
+
+void SettingsApp::onLocationKeyClicked(lv_event_t *e)
+{
+    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
+    lv_obj_t *kb = (lv_obj_t *)lv_event_get_target(e);
+    uint32_t id = lv_buttonmatrix_get_selected_button(kb);
+    if (id == LV_BUTTONMATRIX_BUTTON_NONE) {
+        return;
+    }
+    const char *text = lv_buttonmatrix_get_button_text(kb, id);
+    app->handleLocationKeyText(text);
+}
+
+void SettingsApp::onLocationSaveClicked(lv_event_t *e)
+{
+    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
+    const char *city = lv_textarea_get_text(app->_location_ta);
+    if (city == nullptr || city[0] == '\0') {
+        return;
+    }
+
+    if (!weather_shared_geocode_city_async(city)) {
+        lv_label_set_text(app->_location_status_label,
+                           wifi_shared_is_connected() ? "Lookup already running" : "Wi-Fi not connected");
+        return;
+    }
+
+    lv_label_set_text(app->_location_status_label, "Looking up...");
+    lv_obj_add_state(app->_location_save_btn, LV_STATE_DISABLED);
+    if (app->_location_poll_timer == nullptr) {
+        app->_location_poll_timer = lv_timer_create(onLocationPollTimer, 500, app);
+    }
+}
+
+void SettingsApp::onLocationPollTimer(lv_timer_t *t)
+{
+    SettingsApp *app = (SettingsApp *)lv_timer_get_user_data(t);
+    bool ok = false;
+    if (!weather_shared_geocode_poll(&ok)) {
+        return;  // still running
+    }
+
+    lv_timer_del(app->_location_poll_timer);
+    app->_location_poll_timer = nullptr;
+
+    if (!ok) {
+        if (app->_location_status_label != nullptr) {
+            lv_label_set_text(app->_location_status_label, "City not found - try a different spelling");
+        }
+        if (app->_location_save_btn != nullptr) {
+            lv_obj_remove_state(app->_location_save_btn, LV_STATE_DISABLED);
+        }
+        return;
+    }
+
+    weather_shared_refresh_async();
+    app->closeLocationPopup();
+}
+
+void SettingsApp::onLocationCancelClicked(lv_event_t *e)
+{
+    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
+    app->closeLocationPopup();
+}
+
+void SettingsApp::closeLocationPopup(void)
+{
+    if (_location_poll_timer != nullptr) {
+        lv_timer_del(_location_poll_timer);
+        _location_poll_timer = nullptr;
+    }
+    if (_location_popup != nullptr) {
+        lv_obj_del(_location_popup);
+        _location_popup = nullptr;
+        _location_ta = nullptr;
+        _location_status_label = nullptr;
+        _location_keyboard = nullptr;
+        _location_save_btn = nullptr;
+        selectCategory(_current_category);  // rebuild the list the popup blanked
+    }
 }
 
 void SettingsApp::buildFacesSection(lv_obj_t *list)
@@ -521,7 +776,7 @@ void SettingsApp::buildFacesSection(lv_obj_t *list)
 
     for (size_t i = 0; i < _faces.size(); i++) {
         lv_obj_t *btn = lv_button_create(face_row);
-        lv_obj_set_size(btn, 140, 48);
+        lv_obj_set_size(btn, 150, 58);
         lv_obj_set_user_data(btn, (void *)(intptr_t)i);
         lv_obj_add_event_cb(btn, onFaceButtonClicked, LV_EVENT_CLICKED, this);
         lv_obj_t *lbl = lv_label_create(btn);
@@ -557,7 +812,7 @@ void SettingsApp::buildServerSection(lv_obj_t *list)
     lv_obj_set_width(_webserver_label, LV_PCT(100));
     lv_label_set_long_mode(_webserver_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(_webserver_label, lv_color_hex(0xb8d2dd), 0);
-    lv_obj_set_style_text_font(_webserver_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(_webserver_label, &lv_font_montserrat_20, 0);
     updateWebserverLabel();
 }
 
@@ -586,7 +841,7 @@ void SettingsApp::buildBluetoothSection(lv_obj_t *list)
     lv_obj_set_width(_bt_label, LV_PCT(100));
     lv_label_set_long_mode(_bt_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(_bt_label, lv_color_hex(0xb8d2dd), 0);
-    lv_obj_set_style_text_font(_bt_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(_bt_label, &lv_font_montserrat_20, 0);
     updateBluetoothLabel();
 }
 
@@ -628,12 +883,56 @@ void SettingsApp::selectFace(int index)
     refreshFaceButtons();
 }
 
+/* Builds "min..max" (zero-padded to `digits`) as newline-separated roller
+ * options, e.g. makeRange(0, 23, 2) -> "00\n01\n...\n23". */
+static std::string makeRange(int min, int max, int digits)
+{
+    std::string out;
+    char buf[8];
+    for (int v = min; v <= max; v++) {
+        snprintf(buf, sizeof(buf), "%0*d", digits, v);
+        out += buf;
+        if (v != max) {
+            out += '\n';
+        }
+    }
+    return out;
+}
+
+static lv_obj_t *create_time_roller(lv_obj_t *parent, const char *header, const std::string &options,
+                                     int selected_index)
+{
+    lv_obj_t *col = lv_obj_create(parent);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_size(col, 68, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *label = lv_label_create(col);
+    lv_label_set_text(label, header);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xb8d2dd), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
+
+    lv_obj_t *roller = lv_roller_create(col);
+    lv_obj_set_width(roller, 68);
+    lv_roller_set_options(roller, options.c_str(), LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_visible_row_count(roller, 3);
+    lv_roller_set_selected(roller, selected_index, LV_ANIM_OFF);
+
+    return roller;
+}
+
+/* Rollers replace the old free-text "YYYY-MM-DD HH:MM" entry - scrolling to
+ * a value beats typing an exact string on a small touchscreen, and it can't
+ * produce an unparsable date. */
 void SettingsApp::showSetTimePopup(void)
 {
     closeSetTimePopup();
 
     rtc_shared_datetime_t dt = {};
     rtc_shared_get_datetime(&dt);
+    _roller_base_year = dt.year - 5;
 
     _popup = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_popup, LV_PCT(96), CONTENT_HEIGHT - 8);
@@ -645,81 +944,40 @@ void SettingsApp::showSetTimePopup(void)
     lv_obj_set_style_pad_all(_popup, 10, 0);
 
     lv_obj_t *title = lv_label_create(_popup);
-    lv_label_set_text(title, "Set date/time (YYYY-MM-DD HH:MM)");
+    lv_label_set_text(title, "Set Date & Time");
     lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 4, 4);
 
-    _set_ta = lv_textarea_create(_popup);
-    lv_textarea_set_one_line(_set_ta, true);
-    char buf[24];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", dt.year, dt.month, dt.day, dt.hour, dt.min);
-    lv_textarea_set_text(_set_ta, buf);
-    lv_obj_set_width(_set_ta, LV_PCT(70));
-    lv_obj_align(_set_ta, LV_ALIGN_TOP_LEFT, 4, 30);
+    lv_obj_t *roller_row = lv_obj_create(_popup);
+    lv_obj_remove_style_all(roller_row);
+    lv_obj_set_size(roller_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_align(roller_row, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_set_flex_flow(roller_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(roller_row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(roller_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    _year_roller = create_time_roller(roller_row, "Year", makeRange(_roller_base_year, _roller_base_year + 15, 4),
+                                       dt.year - _roller_base_year);
+    _month_roller = create_time_roller(roller_row, "Mon", makeRange(1, 12, 2), dt.month - 1);
+    _day_roller = create_time_roller(roller_row, "Day", makeRange(1, 31, 2), dt.day - 1);
+    _hour_roller = create_time_roller(roller_row, "Hr", makeRange(0, 23, 2), dt.hour);
+    _min_roller = create_time_roller(roller_row, "Min", makeRange(0, 59, 2), dt.min);
 
     lv_obj_t *save_btn = lv_button_create(_popup);
-    lv_obj_set_size(save_btn, 90, 44);
-    lv_obj_align(save_btn, LV_ALIGN_TOP_RIGHT, -4, 26);
+    lv_obj_set_size(save_btn, 110, 48);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, -60, -4);
     lv_obj_add_event_cb(save_btn, onSaveClicked, LV_EVENT_CLICKED, this);
     lv_obj_t *save_label = lv_label_create(save_btn);
     lv_label_set_text(save_label, "Save");
     lv_obj_center(save_label);
 
     lv_obj_t *cancel_btn = lv_button_create(_popup);
-    lv_obj_set_size(cancel_btn, 90, 40);
-    lv_obj_align_to(cancel_btn, _set_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+    lv_obj_set_size(cancel_btn, 110, 48);
+    lv_obj_align(cancel_btn, LV_ALIGN_BOTTOM_MID, 60, -4);
     lv_obj_add_event_cb(cancel_btn, onCancelClicked, LV_EVENT_CLICKED, this);
     lv_obj_t *cancel_label = lv_label_create(cancel_btn);
     lv_label_set_text(cancel_label, "Cancel");
     lv_obj_center(cancel_label);
-
-    buildSimpleKeypad(_popup);
-}
-
-/* A plain lv_buttonmatrix (not lv_keyboard) - the date/time field only needs
- * digits, "-", ":" and a space. lv_keyboard's draw path has repeatedly hung
- * in lv_draw_add_task on this memory-constrained display/LVGL combo. */
-static const char *SETTINGS_KEYPAD_MAP[] = {
-    "1", "2", "3", "\n",
-    "4", "5", "6", "\n",
-    "7", "8", "9", "\n",
-    "-", "0", ":", "\n",
-    "space", LV_SYMBOL_BACKSPACE, ""
-};
-
-void SettingsApp::buildSimpleKeypad(lv_obj_t *parent)
-{
-    _keypad = lv_buttonmatrix_create(parent);
-    lv_obj_set_size(_keypad, LV_PCT(70), LV_PCT(55));
-    lv_obj_align(_keypad, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_text_font(_keypad, &lv_font_montserrat_16, 0);
-    lv_buttonmatrix_set_map(_keypad, SETTINGS_KEYPAD_MAP);
-    lv_obj_add_event_cb(_keypad, onKeyClicked, LV_EVENT_VALUE_CHANGED, this);
-}
-
-void SettingsApp::handleKeyText(const char *text)
-{
-    if (_set_ta == nullptr || text == nullptr) {
-        return;
-    }
-    if (strcmp(text, LV_SYMBOL_BACKSPACE) == 0) {
-        lv_textarea_delete_char(_set_ta);
-    } else if (strcmp(text, "space") == 0) {
-        lv_textarea_add_char(_set_ta, ' ');
-    } else {
-        lv_textarea_add_text(_set_ta, text);
-    }
-}
-
-void SettingsApp::onKeyClicked(lv_event_t *e)
-{
-    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
-    lv_obj_t *kb = (lv_obj_t *)lv_event_get_target(e);
-    uint32_t id = lv_buttonmatrix_get_selected_button(kb);
-    if (id == LV_BUTTONMATRIX_BUTTON_NONE) {
-        return;
-    }
-    app->handleKeyText(lv_buttonmatrix_get_button_text(kb, id));
 }
 
 void SettingsApp::closeSetTimePopup(void)
@@ -727,8 +985,11 @@ void SettingsApp::closeSetTimePopup(void)
     if (_popup != nullptr) {
         lv_obj_del(_popup);
         _popup = nullptr;
-        _set_ta = nullptr;
-        _keypad = nullptr;
+        _year_roller = nullptr;
+        _month_roller = nullptr;
+        _day_roller = nullptr;
+        _hour_roller = nullptr;
+        _min_roller = nullptr;
     }
 }
 
@@ -741,20 +1002,16 @@ void SettingsApp::onSetTimeClicked(lv_event_t *e)
 void SettingsApp::onSaveClicked(lv_event_t *e)
 {
     SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
-    const char *text = lv_textarea_get_text(app->_set_ta);
 
-    int year, month, day, hour, min;
-    if (sscanf(text, "%d-%d-%d %d:%d", &year, &month, &day, &hour, &min) == 5) {
-        rtc_shared_datetime_t dt = {};
-        dt.year = year;
-        dt.month = month;
-        dt.day = day;
-        dt.hour = hour;
-        dt.min = min;
-        dt.sec = 0;
-        rtc_shared_set_datetime(&dt);
-        app->updateClockLabel();
-    }
+    rtc_shared_datetime_t dt = {};
+    dt.year = app->_roller_base_year + (int)lv_roller_get_selected(app->_year_roller);
+    dt.month = 1 + (int)lv_roller_get_selected(app->_month_roller);
+    dt.day = 1 + (int)lv_roller_get_selected(app->_day_roller);
+    dt.hour = (int)lv_roller_get_selected(app->_hour_roller);
+    dt.min = (int)lv_roller_get_selected(app->_min_roller);
+    dt.sec = 0;
+    rtc_shared_set_datetime(&dt);
+    app->updateClockLabel();
 
     app->closeSetTimePopup();
 }

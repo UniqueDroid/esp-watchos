@@ -5,6 +5,7 @@
 #include "homescreen_shared.h"
 #include "webserver_shared.h"
 #include "bt_shared.h"
+#include "weather_shared.h"
 #include <vector>
 #include <string>
 
@@ -59,8 +60,13 @@ private:
     void showSetTimePopup(void);
     void closeSetTimePopup(void);
     void selectFace(int index);
-    void buildSimpleKeypad(lv_obj_t *parent);
-    void handleKeyText(const char *text);
+
+    void buildLocationCard(lv_obj_t *parent);
+    void updateLocationLabel(void);
+    void showLocationPopup(void);
+    void closeLocationPopup(void);
+    void buildLocationKeyboard(lv_obj_t *parent);
+    void handleLocationKeyText(const char *text);
 
     static void onCategoryButtonClicked(lv_event_t *e);
     static void onSetTimeClicked(lv_event_t *e);
@@ -69,11 +75,16 @@ private:
     static void onClockTimer(lv_timer_t *t);
     static void onFaceButtonClicked(lv_event_t *e);
     static void onBrightnessChanged(lv_event_t *e);
-    static void onKeyClicked(lv_event_t *e);
     static void onHomeColorClicked(lv_event_t *e);
     static void onAodColorClicked(lv_event_t *e);
     static void onWebserverToggled(lv_event_t *e);
     static void onBluetoothToggled(lv_event_t *e);
+
+    static void onLocationChangeClicked(lv_event_t *e);
+    static void onLocationSaveClicked(lv_event_t *e);
+    static void onLocationCancelClicked(lv_event_t *e);
+    static void onLocationKeyClicked(lv_event_t *e);
+    static void onLocationPollTimer(lv_timer_t *t);
 
     void refreshHomeColorSwatches(void);
     void refreshAodColorSwatches(void);
@@ -84,8 +95,12 @@ private:
 
     lv_obj_t *_clock_label = nullptr;
     lv_obj_t *_popup = nullptr;
-    lv_obj_t *_set_ta = nullptr;
-    lv_obj_t *_keypad = nullptr;
+    lv_obj_t *_year_roller = nullptr;
+    lv_obj_t *_month_roller = nullptr;
+    lv_obj_t *_day_roller = nullptr;
+    lv_obj_t *_hour_roller = nullptr;
+    lv_obj_t *_min_roller = nullptr;
+    int _roller_base_year = 2024;
     lv_timer_t *_clock_timer = nullptr;
 
     std::vector<WatchfaceEntry> _faces;
@@ -102,6 +117,16 @@ private:
     lv_obj_t *_webserver_switch = nullptr;
     lv_obj_t *_bt_label = nullptr;
     lv_obj_t *_bt_switch = nullptr;
+
+    lv_obj_t *_location_label = nullptr;
+    lv_obj_t *_location_popup = nullptr;
+    lv_obj_t *_location_ta = nullptr;
+    lv_obj_t *_location_status_label = nullptr;
+    lv_obj_t *_location_keyboard = nullptr;
+    lv_obj_t *_location_save_btn = nullptr;
+    bool _location_keyboard_numeric = false;
+    bool _location_keyboard_shift = false;
+    lv_timer_t *_location_poll_timer = nullptr;
 
     SettingsCategory _current_category = SettingsCategory::TIME;
     lv_obj_t *_category_buttons[static_cast<int>(SettingsCategory::COUNT)] = {};
