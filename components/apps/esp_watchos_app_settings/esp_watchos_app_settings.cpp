@@ -8,98 +8,21 @@
 #include "esp_watchos_app_settings.hpp"
 
 #include "bsp/esp-bsp.h"
-#include "nvs.h"
-#include "nvs_flash.h"
-#include "os_fs.h"
 #include "wifi_shared.h"
 #include "display_shared.h"
 
-#include <dirent.h>
-#include <sys/stat.h>
-#include <cstdio>
 #include <cstring>
-#include <algorithm>
 
 #define APP_NAME "Settings"
 #define DISPLAY_HEIGHT 502
 #define STATUS_BAR_HEIGHT 52
 #define CONTENT_HEIGHT (DISPLAY_HEIGHT - STATUS_BAR_HEIGHT)
 
-#define FACE_NVS_NAMESPACE "appcfg"
-#define FACE_NVS_KEY "facefile"
-
 using namespace esp_brookesia::systems;
 
 LV_IMG_DECLARE(esp_watchos_app_icon_launcher_settings_120_120);
 
 namespace esp_watchos::apps {
-
-static std::string load_selected_face(void)
-{
-    nvs_handle_t handle;
-    char buf[40] = {};
-    if (nvs_open(FACE_NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
-        size_t len = sizeof(buf);
-        nvs_get_str(handle, FACE_NVS_KEY, buf, &len);
-        nvs_close(handle);
-    }
-    return std::string(buf);
-}
-
-static void save_selected_face(const std::string &filename)
-{
-    nvs_handle_t handle;
-    if (nvs_open(FACE_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
-        nvs_set_str(handle, FACE_NVS_KEY, filename.c_str());
-        nvs_commit(handle);
-        nvs_close(handle);
-    }
-}
-
-/* Same /data/apps/watchface/faces/ JSON files the Watchface app reads -
- * Settings only needs each file's "name" field to label a picker button. */
-static std::string read_file(const std::string &path)
-{
-    FILE *f = fopen(path.c_str(), "r");
-    if (!f) {
-        return "";
-    }
-    std::string data;
-    char buf[256];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-        data.append(buf, n);
-    }
-    fclose(f);
-    return data;
-}
-
-static bool json_get(const std::string &json, const char *key, std::string &out)
-{
-    std::string pattern = std::string("\"") + key + "\"";
-    size_t pos = json.find(pattern);
-    if (pos == std::string::npos) {
-        return false;
-    }
-    pos = json.find(':', pos + pattern.size());
-    if (pos == std::string::npos) {
-        return false;
-    }
-    pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) {
-        pos++;
-    }
-    if (pos >= json.size() || json[pos] != '"') {
-        return false;
-    }
-    pos++;
-    size_t end = json.find('"', pos);
-    if (end == std::string::npos) {
-        return false;
-    }
-    out = json.substr(pos, end - pos);
-    return true;
-}
 
 SettingsApp *SettingsApp::_instance = nullptr;
 
@@ -123,16 +46,6 @@ SettingsApp::~SettingsApp()
 bool SettingsApp::run(void)
 {
     rtc_shared_init();
-    loadWatchfaceEntries();
-
-    std::string selected = load_selected_face();
-    _selected_face = 0;
-    for (size_t i = 0; i < _faces.size(); i++) {
-        if (_faces[i].filename == selected) {
-            _selected_face = (int)i;
-            break;
-        }
-    }
 
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0b1115), 0);
@@ -180,100 +93,6 @@ bool SettingsApp::resume(void)
         lv_timer_resume(_clock_timer);
     }
     return true;
-}
-
-static void write_file(const std::string &path, const char *content)
-{
-    FILE *f = fopen(path.c_str(), "w");
-    if (!f) {
-        return;
-    }
-    fwrite(content, 1, strlen(content), f);
-    fclose(f);
-}
-
-/* Mirrors the Watchface app's own seeding logic - both apps are independent
- * and may be opened in either order, so each ensures the shared on-disk
- * watchface directory exists rather than depending on the other having run. */
-static void seed_default_faces_if_missing(const std::string &dir)
-{
-    bool has_any = false;
-    DIR *d = opendir(dir.c_str());
-    if (d != nullptr) {
-        struct dirent *entry;
-        while ((entry = readdir(d)) != nullptr) {
-            std::string fname = entry->d_name;
-            if (fname.size() > 5 && fname.compare(fname.size() - 5, 5, ".json") == 0) {
-                has_any = true;
-                break;
-            }
-        }
-        closedir(d);
-    }
-    if (has_any) {
-        return;
-    }
-
-    write_file(dir + "/classic.json",
-               "{\"name\":\"Classic\",\"type\":\"analog\",\"bg_color\":\"0x10181d\",\"bg_color2\":\"0x05080a\","
-               "\"ring_color\":\"0x355563\",\"major_color\":\"0xd9f2ea\",\"minor_color\":\"0x7d96a0\","
-               "\"hour_color\":\"0xffffff\",\"minute_color\":\"0x6cf0c2\",\"second_color\":\"0xff8844\","
-               "\"accent_color\":\"0x6cf0c2\",\"marks\":\"ticks\"}");
-    write_file(dir + "/ocean.json",
-               "{\"name\":\"Ocean\",\"type\":\"analog\",\"bg_color\":\"0x031a26\",\"bg_color2\":\"0x00060d\","
-               "\"ring_color\":\"0x0d4f66\",\"major_color\":\"0x9fe7ff\",\"minor_color\":\"0x4c7a8c\","
-               "\"hour_color\":\"0xeaffff\",\"minute_color\":\"0x32c5e8\",\"second_color\":\"0xffd166\","
-               "\"accent_color\":\"0x32c5e8\",\"marks\":\"dots\"}");
-    write_file(dir + "/ember.json",
-               "{\"name\":\"Ember\",\"type\":\"analog\",\"bg_color\":\"0x1a0d05\",\"bg_color2\":\"0x06010a\","
-               "\"ring_color\":\"0x6b3216\",\"major_color\":\"0xffe0c2\",\"minor_color\":\"0xa6713f\","
-               "\"hour_color\":\"0xffffff\",\"minute_color\":\"0xff9a3c\",\"second_color\":\"0xff3c3c\","
-               "\"accent_color\":\"0xff9a3c\",\"marks\":\"numbers\"}");
-    write_file(dir + "/mono.json",
-               "{\"name\":\"Mono\",\"type\":\"digital\",\"bg_color\":\"0x000000\",\"bg_color2\":\"0x101820\","
-               "\"time_color\":\"0xffffff\",\"date_color\":\"0x888888\",\"accent_color\":\"0x6cf0c2\"}");
-    write_file(dir + "/modular.json",
-               "{\"name\":\"Modular\",\"type\":\"modular\",\"bg_color\":\"0x05080a\",\"bg_color2\":\"0x10181d\","
-               "\"time_color\":\"0xffffff\",\"date_color\":\"0x6cf0c2\",\"accent_color\":\"0x6cf0c2\"}");
-}
-
-void SettingsApp::loadWatchfaceEntries(void)
-{
-    _faces.clear();
-
-    std::string watchface_dir = std::string(OS_FS_APPS_DIR) + "/watchface";
-    std::string faces_dir = watchface_dir + "/faces";
-    mkdir(watchface_dir.c_str(), 0755);
-    mkdir(faces_dir.c_str(), 0755);
-    seed_default_faces_if_missing(faces_dir);
-
-    DIR *d = opendir(faces_dir.c_str());
-    if (d == nullptr) {
-        return;
-    }
-
-    struct dirent *entry;
-    while ((entry = readdir(d)) != nullptr) {
-        std::string fname = entry->d_name;
-        if (fname.size() <= 5 || fname.compare(fname.size() - 5, 5, ".json") != 0) {
-            continue;
-        }
-        std::string json = read_file(faces_dir + "/" + fname);
-        if (json.empty()) {
-            continue;
-        }
-        WatchfaceEntry face;
-        face.filename = fname;
-        if (!json_get(json, "name", face.name)) {
-            face.name = fname;
-        }
-        _faces.push_back(face);
-    }
-    closedir(d);
-
-    std::sort(_faces.begin(), _faces.end(), [](const WatchfaceEntry & a, const WatchfaceEntry & b) {
-        return a.filename < b.filename;
-    });
 }
 
 static lv_obj_t *create_card(lv_obj_t *parent, const char *title_text)
@@ -330,8 +149,6 @@ void SettingsApp::buildCategoryBar(lv_obj_t *parent)
     static const struct { const char *label; SettingsCategory category; } CATEGORIES[] = {
         {"Time", SettingsCategory::TIME},
         {"Display", SettingsCategory::DISPLAY},
-        {"Faces", SettingsCategory::FACES},
-        {"Server", SettingsCategory::SERVER},
         {"Bluetooth", SettingsCategory::BLUETOOTH},
     };
 
@@ -381,16 +198,11 @@ void SettingsApp::selectCategory(SettingsCategory category)
     closeSetTimePopup();
     lv_obj_clean(_list);
     _clock_label = nullptr;
-    _webserver_label = nullptr;
-    _webserver_switch = nullptr;
     _bt_label = nullptr;
     _bt_switch = nullptr;
     _location_label = nullptr;
     _home_swatches.clear();
     _aod_swatches.clear();
-    for (auto &face : _faces) {
-        face.button = nullptr;
-    }
 
     _current_category = category;
     refreshCategoryButtons();
@@ -401,12 +213,6 @@ void SettingsApp::selectCategory(SettingsCategory category)
         break;
     case SettingsCategory::DISPLAY:
         buildDisplaySection(_list);
-        break;
-    case SettingsCategory::FACES:
-        buildFacesSection(_list);
-        break;
-    case SettingsCategory::SERVER:
-        buildServerSection(_list);
         break;
     case SettingsCategory::BLUETOOTH:
         buildBluetoothSection(_list);
@@ -586,6 +392,7 @@ void SettingsApp::showLocationPopup(void)
 
     _location_ta = lv_textarea_create(_location_popup);
     lv_textarea_set_one_line(_location_ta, true);
+    lv_textarea_set_placeholder_text(_location_ta, "e.g. Berlin");
     lv_obj_set_size(_location_ta, LV_PCT(100), 52);
     lv_obj_set_style_text_font(_location_ta, &lv_font_montserrat_20, 0);
     lv_obj_align_to(_location_ta, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
@@ -594,11 +401,19 @@ void SettingsApp::showLocationPopup(void)
         lv_textarea_set_text(_location_ta, loc.city);
     }
 
+    lv_obj_t *hint = lv_label_create(_location_popup);
+    lv_label_set_text(hint, "Just the city name - no country/region, e.g. \"Berlin\" not \"Berlin, Germany\"");
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(hint, LV_PCT(100));
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(hint, _location_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+
     _location_status_label = lv_label_create(_location_popup);
     lv_label_set_text(_location_status_label, "");
     lv_obj_set_style_text_color(_location_status_label, lv_color_hex(0xff8844), 0);
     lv_obj_set_style_text_font(_location_status_label, &lv_font_montserrat_18, 0);
-    lv_obj_align_to(_location_status_label, _location_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+    lv_obj_align_to(_location_status_label, hint, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
 
     _location_save_btn = lv_button_create(_location_popup);
     lv_obj_set_size(_location_save_btn, 110, 44);
@@ -762,60 +577,6 @@ void SettingsApp::closeLocationPopup(void)
     }
 }
 
-void SettingsApp::buildFacesSection(lv_obj_t *list)
-{
-    lv_obj_t *face_card = create_card(list, "Watchface");
-
-    lv_obj_t *face_row = lv_obj_create(face_card);
-    lv_obj_remove_style_all(face_row);
-    lv_obj_set_size(face_row, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(face_row, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_column(face_row, 10, 0);
-    lv_obj_set_style_pad_row(face_row, 10, 0);
-    lv_obj_clear_flag(face_row, LV_OBJ_FLAG_SCROLLABLE);
-
-    for (size_t i = 0; i < _faces.size(); i++) {
-        lv_obj_t *btn = lv_button_create(face_row);
-        lv_obj_set_size(btn, 150, 58);
-        lv_obj_set_user_data(btn, (void *)(intptr_t)i);
-        lv_obj_add_event_cb(btn, onFaceButtonClicked, LV_EVENT_CLICKED, this);
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, _faces[i].name.c_str());
-        lv_obj_center(lbl);
-        _faces[i].button = btn;
-    }
-    refreshFaceButtons();
-}
-
-void SettingsApp::buildServerSection(lv_obj_t *list)
-{
-    lv_obj_t *web_card = create_card(list, "Watchface Server");
-
-    lv_obj_t *web_row = lv_obj_create(web_card);
-    lv_obj_remove_style_all(web_row);
-    lv_obj_set_size(web_row, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(web_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(web_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(web_row, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *web_label = lv_label_create(web_row);
-    lv_label_set_text(web_label, "Enable upload server");
-    lv_obj_set_style_text_color(web_label, lv_color_hex(0xffffff), 0);
-
-    _webserver_switch = lv_switch_create(web_row);
-    lv_obj_add_event_cb(_webserver_switch, onWebserverToggled, LV_EVENT_VALUE_CHANGED, this);
-    if (webserver_shared_is_running()) {
-        lv_obj_add_state(_webserver_switch, LV_STATE_CHECKED);
-    }
-
-    _webserver_label = lv_label_create(web_card);
-    lv_obj_set_width(_webserver_label, LV_PCT(100));
-    lv_label_set_long_mode(_webserver_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(_webserver_label, lv_color_hex(0xb8d2dd), 0);
-    lv_obj_set_style_text_font(_webserver_label, &lv_font_montserrat_20, 0);
-    updateWebserverLabel();
-}
-
 void SettingsApp::buildBluetoothSection(lv_obj_t *list)
 {
     lv_obj_t *bt_card = create_card(list, "Bluetooth");
@@ -857,30 +618,6 @@ void SettingsApp::updateClockLabel(void)
     char buf[32];
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d  %02d:%02d:%02d", dt.year, dt.month, dt.day, dt.hour, dt.min, dt.sec);
     lv_label_set_text(_clock_label, buf);
-}
-
-void SettingsApp::refreshFaceButtons(void)
-{
-    for (size_t i = 0; i < _faces.size(); i++) {
-        bool selected = ((int)i == _selected_face);
-        lv_obj_t *btn = _faces[i].button;
-        if (btn == nullptr) {
-            continue;
-        }
-        lv_obj_set_style_border_color(btn, selected ? lv_color_hex(0x6cf0c2) : lv_color_hex(0x355563), 0);
-        lv_obj_set_style_border_width(btn, selected ? 3 : 1, 0);
-        lv_obj_set_style_bg_color(btn, selected ? lv_color_hex(0x123322) : lv_color_hex(0x222a30), 0);
-    }
-}
-
-void SettingsApp::selectFace(int index)
-{
-    if (index < 0 || index >= (int)_faces.size()) {
-        return;
-    }
-    _selected_face = index;
-    save_selected_face(_faces[index].filename);
-    refreshFaceButtons();
 }
 
 /* Builds "min..max" (zero-padded to `digits`) as newline-separated roller
@@ -1030,14 +767,6 @@ void SettingsApp::onClockTimer(lv_timer_t *t)
     }
 }
 
-void SettingsApp::onFaceButtonClicked(lv_event_t *e)
-{
-    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
-    lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
-    int index = (int)(intptr_t)lv_obj_get_user_data(btn);
-    app->selectFace(index);
-}
-
 void SettingsApp::onBrightnessChanged(lv_event_t *e)
 {
     lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
@@ -1095,66 +824,6 @@ void SettingsApp::onCategoryButtonClicked(lv_event_t *e)
     app->selectCategory(category);
 }
 
-/* Now that each category only ever shows its own widgets, the server toggle
- * no longer needs to manually tear down the rest of the screen first - it
- * was already torn down the moment the "Server" category was selected. */
-void SettingsApp::onWebserverToggled(lv_event_t *e)
-{
-    SettingsApp *app = (SettingsApp *)lv_event_get_user_data(e);
-    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
-    bool turning_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-
-    if (!turning_on) {
-        webserver_shared_stop();
-        app->updateWebserverLabel();
-        return;
-    }
-
-    if (!wifi_shared_is_connected()) {
-        lv_obj_clear_state(sw, LV_STATE_CHECKED);
-        lv_label_set_text(app->_webserver_label, "Connect to WiFi first (WiFi Connect app)");
-        lv_obj_set_style_text_color(app->_webserver_label, lv_color_hex(0xff8888), 0);
-        return;
-    }
-
-    if (!webserver_shared_start()) {
-        lv_obj_clear_state(sw, LV_STATE_CHECKED);
-        lv_label_set_text(app->_webserver_label,
-                           "Not enough free memory right now - try closing other apps");
-        lv_obj_set_style_text_color(app->_webserver_label, lv_color_hex(0xff8888), 0);
-        return;
-    }
-
-    app->updateWebserverLabel();
-}
-
-void SettingsApp::updateWebserverLabel(void)
-{
-    if (_webserver_label == nullptr) {
-        return;
-    }
-    if (!webserver_shared_is_running()) {
-        lv_label_set_text(_webserver_label, "Off");
-        lv_obj_set_style_text_color(_webserver_label, lv_color_hex(0xb8d2dd), 0);
-        return;
-    }
-
-    char ip[16] = {};
-    char password[9] = {};
-    bool have_password = webserver_shared_get_password(password, sizeof(password));
-    char buf[96];
-    if (wifi_shared_get_ip(ip, sizeof(ip))) {
-        if (have_password) {
-            snprintf(buf, sizeof(buf), "Open http://%s - user admin, password %s", ip, password);
-        } else {
-            snprintf(buf, sizeof(buf), "Open http://%s in a browser", ip);
-        }
-    } else {
-        snprintf(buf, sizeof(buf), "Running, but no IP yet");
-    }
-    lv_label_set_text(_webserver_label, buf);
-    lv_obj_set_style_text_color(_webserver_label, lv_color_hex(0x6cf0c2), 0);
-}
 
 void SettingsApp::onBluetoothToggled(lv_event_t *e)
 {
