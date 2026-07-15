@@ -226,8 +226,10 @@ static const uint8_t SEVEN_SEG_DIGIT_MAP[10] = {
 
 static lv_obj_t *s_aod_screen = nullptr;
 static lv_obj_t *s_aod_digit_row = nullptr;
+static lv_obj_t *s_aod_weekday_label = nullptr;
+static lv_obj_t *s_aod_wifi_label = nullptr;
+static lv_obj_t *s_aod_battery_label = nullptr;
 static lv_obj_t *s_aod_date_label = nullptr;
-static lv_obj_t *s_aod_status_label = nullptr;
 static lv_obj_t *s_aod_weather_label = nullptr;
 static SevenSegDigit s_aod_digits[4];
 static lv_obj_t *s_aod_colon_dots[2] = {nullptr, nullptr};
@@ -323,19 +325,49 @@ static void build_aod_screen(void)
     create_seven_seg_digit(s_aod_digit_row, &s_aod_digits[2]);
     create_seven_seg_digit(s_aod_digit_row, &s_aod_digits[3]);
 
-    s_aod_date_label = lv_label_create(s_aod_screen);
+    s_aod_weekday_label = lv_label_create(s_aod_screen);
+    lv_label_set_text(s_aod_weekday_label, "");
+    lv_obj_set_style_text_color(s_aod_weekday_label, lv_color_hex(s_aod_color), 0);
+    lv_obj_set_style_text_font(s_aod_weekday_label, &lv_font_montserrat_24, 0);
+    lv_obj_clear_flag(s_aod_weekday_label, LV_OBJ_FLAG_CLICKABLE);
+
+    // Wi-Fi + battery row - icons spread to opposite ends, like the reference layout.
+    lv_obj_t *status_row = lv_obj_create(s_aod_screen);
+    lv_obj_remove_style_all(status_row);
+    lv_obj_set_size(status_row, 260, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(status_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(status_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(status_row, LV_OBJ_FLAG_CLICKABLE);
+
+    s_aod_wifi_label = lv_label_create(status_row);
+    lv_label_set_text(s_aod_wifi_label, "");
+    lv_obj_set_style_text_color(s_aod_wifi_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(s_aod_wifi_label, &lv_font_montserrat_20, 0);
+    lv_obj_clear_flag(s_aod_wifi_label, LV_OBJ_FLAG_CLICKABLE);
+
+    s_aod_battery_label = lv_label_create(status_row);
+    lv_label_set_text(s_aod_battery_label, "");
+    lv_obj_set_style_text_color(s_aod_battery_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(s_aod_battery_label, &lv_font_montserrat_20, 0);
+    lv_obj_clear_flag(s_aod_battery_label, LV_OBJ_FLAG_CLICKABLE);
+
+    // Date + weather row, same spread-apart layout below it.
+    lv_obj_t *info_row = lv_obj_create(s_aod_screen);
+    lv_obj_remove_style_all(info_row);
+    lv_obj_set_size(info_row, 260, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(info_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(info_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(info_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(info_row, LV_OBJ_FLAG_CLICKABLE);
+
+    s_aod_date_label = lv_label_create(info_row);
     lv_label_set_text(s_aod_date_label, "");
-    lv_obj_set_style_text_color(s_aod_date_label, lv_color_hex(s_aod_color), 0);
-    lv_obj_set_style_text_font(s_aod_date_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s_aod_date_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(s_aod_date_label, &lv_font_montserrat_20, 0);
     lv_obj_clear_flag(s_aod_date_label, LV_OBJ_FLAG_CLICKABLE);
 
-    s_aod_status_label = lv_label_create(s_aod_screen);
-    lv_label_set_text(s_aod_status_label, "");
-    lv_obj_set_style_text_color(s_aod_status_label, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(s_aod_status_label, &lv_font_montserrat_20, 0);
-    lv_obj_clear_flag(s_aod_status_label, LV_OBJ_FLAG_CLICKABLE);
-
-    s_aod_weather_label = lv_label_create(s_aod_screen);
+    s_aod_weather_label = lv_label_create(info_row);
     lv_label_set_text(s_aod_weather_label, "");
     lv_obj_set_style_text_color(s_aod_weather_label, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(s_aod_weather_label, &lv_font_montserrat_20, 0);
@@ -351,43 +383,45 @@ static void update_aod_clock(void)
     set_seven_seg_digit(&s_aod_digits[2], dt.min / 10);
     set_seven_seg_digit(&s_aod_digits[3], dt.min % 10);
 
-    if (s_aod_date_label != nullptr) {
+    if (s_aod_weekday_label != nullptr) {
         int weekday = rtc_shared_weekday(dt.year, dt.month, dt.day);
-        char buf[48];
-        snprintf(buf, sizeof(buf), "%s, %s %u", AOD_WEEKDAY_NAMES[weekday], AOD_MONTH_NAMES[dt.month - 1],
-                 (unsigned)dt.day);
+        lv_label_set_text(s_aod_weekday_label, AOD_WEEKDAY_NAMES[weekday]);
+    }
+    if (s_aod_date_label != nullptr) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%s %u", AOD_MONTH_NAMES[dt.month - 1], (unsigned)dt.day);
         lv_label_set_text(s_aod_date_label, buf);
     }
 }
 
 static void update_aod_status(void)
 {
-    if (s_aod_status_label == nullptr) {
-        return;
+    if (s_aod_wifi_label != nullptr) {
+        lv_label_set_text(s_aod_wifi_label, wifi_shared_is_connected() ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE);
     }
 
-    char buf[64];
-    const char *wifi_icon = wifi_shared_is_connected() ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE;
-
-    int batt_percent = battery_shared_get_percent();
-    if (batt_percent < 0) {
-        snprintf(buf, sizeof(buf), "%s", wifi_icon);
-    } else {
-        const char *batt_icon = LV_SYMBOL_BATTERY_EMPTY;
-        if (battery_shared_get_state() == BATTERY_SHARED_STATE_CHARGING) {
-            batt_icon = LV_SYMBOL_CHARGE;
-        } else if (batt_percent >= 90) {
-            batt_icon = LV_SYMBOL_BATTERY_FULL;
-        } else if (batt_percent >= 60) {
-            batt_icon = LV_SYMBOL_BATTERY_3;
-        } else if (batt_percent >= 40) {
-            batt_icon = LV_SYMBOL_BATTERY_2;
-        } else if (batt_percent >= 15) {
-            batt_icon = LV_SYMBOL_BATTERY_1;
+    if (s_aod_battery_label != nullptr) {
+        int batt_percent = battery_shared_get_percent();
+        if (batt_percent < 0) {
+            lv_label_set_text(s_aod_battery_label, "");
+        } else {
+            const char *batt_icon = LV_SYMBOL_BATTERY_EMPTY;
+            if (battery_shared_get_state() == BATTERY_SHARED_STATE_CHARGING) {
+                batt_icon = LV_SYMBOL_CHARGE;
+            } else if (batt_percent >= 90) {
+                batt_icon = LV_SYMBOL_BATTERY_FULL;
+            } else if (batt_percent >= 60) {
+                batt_icon = LV_SYMBOL_BATTERY_3;
+            } else if (batt_percent >= 40) {
+                batt_icon = LV_SYMBOL_BATTERY_2;
+            } else if (batt_percent >= 15) {
+                batt_icon = LV_SYMBOL_BATTERY_1;
+            }
+            char buf[24];
+            snprintf(buf, sizeof(buf), "%s %d%%", batt_icon, batt_percent);
+            lv_label_set_text(s_aod_battery_label, buf);
         }
-        snprintf(buf, sizeof(buf), "%s   %s %d%%", wifi_icon, batt_icon, batt_percent);
     }
-    lv_label_set_text(s_aod_status_label, buf);
 }
 
 /* Kicks off a background refresh when the cached weather is missing/stale -
@@ -498,8 +532,10 @@ static void hide_aod_view(void)
         lv_obj_del(s_aod_screen);  // deletes the whole subtree (digit row, colon, labels) too
         s_aod_screen = nullptr;
         s_aod_digit_row = nullptr;
+        s_aod_weekday_label = nullptr;
+        s_aod_wifi_label = nullptr;
+        s_aod_battery_label = nullptr;
         s_aod_date_label = nullptr;
-        s_aod_status_label = nullptr;
         s_aod_weather_label = nullptr;
         s_aod_colon_dots[0] = nullptr;
         s_aod_colon_dots[1] = nullptr;

@@ -9,7 +9,7 @@ extern "C" {
 /* ESPWatchOS on-device filesystem layout (LittleFS, partition "storage"):
  *
  *   /data/system   - reserved for core OS state
- *   /data/apps     - per-app data, loadable content (e.g. apps/watchface/faces/ JSON files)
+ *   /data/apps     - per-app data, loadable content
  *   /data/etc      - user settings
  *   /data/tmp      - scratch space, cleared on demand
  */
